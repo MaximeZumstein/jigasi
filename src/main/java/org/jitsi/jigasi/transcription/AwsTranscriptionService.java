@@ -74,6 +74,8 @@ public class AwsTranscriptionService
 
     private final static DateTimeFormatter dateFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd-HH-mm-ss");
 
+    private final int AWS_MIN_PART_SIZE = 5 * 1024 * 1024; // 5 mB
+
     private final AwsBasicCredentials credentials;
     private final Region region;
     private final String bucket;
@@ -174,14 +176,18 @@ public class AwsTranscriptionService
 
         private S3Client client;
         private int partIndex = 0;
+        private ByteBuffer buffer = ByteBuffer.allocate(2 * AWS_MIN_PART_SIZE);
 
 
         AwsStreamingSession(Participant participant)
             throws Exception
         {
             this.participant = participant;
-            this.key = path + "/" + participant.getTranscriber().getRoomName()  + "/"
-                    + dateFormatter.format(LocalDateTime.now()) + "_" + participant.getName() + ".flac";
+            this.key = path + "/" + participant.getTranscriber().getRoomName().split("@")[0]  + "/"
+                    + dateFormatter.format(LocalDateTime.now()) + "_" + participant.getName() + ".raw";
+
+            logger.info(this.participant.getDebugName() + ": Start recording at " + this.key);
+
             this.client = S3Client.builder()
                 .region(region)
                 .credentialsProvider(() -> credentials).build();
@@ -198,13 +204,20 @@ public class AwsTranscriptionService
 
         public void sendRequest(TranscriptionRequest request)
         {
+            buffer.put(request.getAudio());
+            if(buffer.remaining() > AWS_MIN_PART_SIZE) return;
+
             UploadPartRequest uploadPartRequest = UploadPartRequest.builder()
                     .bucket(bucket)
                     .key(key)
                     .uploadId(uploadId)
                     .partNumber(++partIndex)
                     .build();
-            String etag = this.client.uploadPart(uploadPartRequest, RequestBody.fromBytes(request.getAudio())).eTag();
+
+
+            byte[] content = buffer.array();
+            String etag = this.client.uploadPart(uploadPartRequest, RequestBody.fromBytes(content)).eTag();
+            buffer.rewind();
 
             CompletedPart endPart = CompletedPart.builder()
                     .partNumber(partIndex)
@@ -216,6 +229,27 @@ public class AwsTranscriptionService
 
         public void end()
         {
+            if(buffer.position() != 0)
+            {
+                UploadPartRequest uploadPartRequest = UploadPartRequest.builder()
+                        .bucket(bucket)
+                        .key(key)
+                        .uploadId(uploadId)
+                        .partNumber(++partIndex)
+                        .build();
+
+
+                String etag = this.client.uploadPart(uploadPartRequest, RequestBody.fromBytes(buffer.array())).eTag();
+                buffer.rewind();
+
+                CompletedPart endPart = CompletedPart.builder()
+                        .partNumber(partIndex)
+                        .eTag(etag)
+                        .build();
+
+                parts.add(endPart);
+            }
+
             CompletedMultipartUpload completedMultipartUpload = CompletedMultipartUpload.builder()
                     .parts(parts)
                     .build();
@@ -227,7 +261,15 @@ public class AwsTranscriptionService
                     .multipartUpload(completedMultipartUpload)
                     .build();
 
-            this.client.completeMultipartUpload(completeMultipartUploadRequest);
+            try
+            {
+                this.client.completeMultipartUpload(completeMultipartUploadRequest);
+            }
+            catch (S3Exception exception)
+            {
+                logger.error(this.participant.getDebugName() + ": Error sending end request "
+                        + exception.getLocalizedMessage());
+            }
 
             this.client.close();
             this.client = null;
