@@ -72,7 +72,7 @@ public class AwsTranscriptionService
     public final static String BUCKET = "org.jitsi.jigasi.transcription.aws.bucket";
     public final static String PATH = "org.jitsi.jigasi.transcription.aws.path";
 
-    private final static DateTimeFormatter dateFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd-HH-mm-ss");
+    private final static DateTimeFormatter dateFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd-HH-mm-ss-SSS");
 
     private final int AWS_MIN_PART_SIZE = 5 * 1024 * 1024; // 5 mB
 
@@ -184,7 +184,8 @@ public class AwsTranscriptionService
         {
             this.participant = participant;
             this.key = path + "/" + participant.getTranscriber().getRoomName().split("@")[0]  + "/"
-                    + dateFormatter.format(LocalDateTime.now()) + "_" + participant.getName() + ".raw";
+                    + dateFormatter.format(LocalDateTime.now()) + "_"
+                    + this.participant.getDebugName().split("/")[1] + ".raw";
 
             logger.info(this.participant.getDebugName() + ": Start recording at " + this.key);
 
